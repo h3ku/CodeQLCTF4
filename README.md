@@ -30,28 +30,28 @@ Consider improving your predicate so we only consider cases where the bean type 
 There are multiple ways to implement this, using classes, predicates or straight into the isSource predicate, in my case I decided to map the ConstraintValidator class and the isValid method using classes and the use this classes in the isSource predicate.
 
 ```ql
-import  java
-import  semmle.code.java.dataflow.DataFlow
+import java
+import semmle.code.java.dataflow.DataFlow
 
 /*
 Map overrides of isValid method from ConstraintValidator
 */
-class  ConstraintValidator  extends  RefType {
+class ConstraintValidator extends RefType {
 	ConstraintValidator() {
 		this.getQualifiedName().regexpMatch("javax.validation.ConstraintValidator(.*?)")
 	}
 }
 
-class  ConstraintValidatorIsValid  extends  Method {
+class ConstraintValidatorIsValid extends Method {
 	ConstraintValidatorIsValid() {
-		this.getName() = "isValid"  and
-		this.getDeclaringType().getASupertype() instanceof  ConstraintValidator
+		this.getName() = "isValid" and
+		this.getDeclaringType().getASupertype() instanceof ConstraintValidator
 	}
 }
 
-predicate  isSource(DataFlow::Node  source) {
-	exists(ConstraintValidatorIsValid  isValidMethod|
-	source.asParameter() = isValidMethod.getParameter(0)
+predicate isSource(DataFlow::Node source) {
+	exists(ConstraintValidatorIsValid isValidMethod |
+		source.asParameter() = isValidMethod.getParameter(0)
 	)
 }
 
@@ -59,8 +59,47 @@ predicate  isSource(DataFlow::Node  source) {
 select 1
 ```
 
-This should mark as source nodes the first parameter of the isValid method in classes that implements ConstraintValidator.
+A quick evaluation of isSource should mark as source nodes the first parameter of the isValid method in classes that implements ConstraintValidator.
 
 
+### Step 1.2: Sink
+
+The injection sinks we are considering occur as the first argument of a call to  `ConstraintValidatorContext.buildConstraintViolationWithTemplate(...)`.
+
+Write a CodeQL predicate to identify these sinks.
+```ql
+predicate isSink(DataFlow::Node sink) { /* TODO describe sink */ }
+```
+Quick evaluation of your predicate should give you 5 results.
+
+### Step 1.2: Sink - Solution
+Same as before there are quite a few ways to implement this, in this case I decided to go with a class to map the method BuildConstraintViolationWithTemplate from ConstraintValidatorContext and then put the rest of the login in the isSink predicate.
+
+```ql
+import java
+import semmle.code.java.dataflow.DataFlow
+
+/**
+Map ConstraintValidatorContext.BuildConstraintViolationWithTemplate.
+*/
+class BuildConstraintViolationWithTemplate extends Method {
+	BuildConstraintViolationWithTemplate() {
+		this.hasName("buildConstraintViolationWithTemplate") and
+		this.getDeclaringType().hasName("ConstraintValidatorContext")
+	}
+}
+
+predicate isSink(DataFlow::Node sink) {
+	exists(MethodAccess  callTobuildConstraintViolationWithTemplate |
+		callTobuildConstraintViolationWithTemplate.getMethod() instanceof BuildConstraintViolationWithTemplate and
+		sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
+	)
+}
+
+//There has to be a query in scope even when you use Quick Evaluation
+select 1
+```
+
+A quick evaluation of isSink should mark as sink nodes the first argument of calls to the method ConstraintValidatorContext.buildConstraintViolationWithTemplate() 
 
 
