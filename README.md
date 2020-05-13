@@ -103,3 +103,90 @@ select 1
 A quick evaluation of isSink should mark as sink nodes the first argument of calls to the method ConstraintValidatorContext.buildConstraintViolationWithTemplate() 
 
 
+### Step 1.3: TaintTracking configuration
+Before going any further, we recommend that you quick-eval your  `isSource`  and  `isSink`  predicates to make sure both are matching the issue described above in  `SchedulingConstraintSetValidator.java`. This case will be our main target issue for the rest of this challenge.
+
+All done? Ok, so now let's find this vulnerable path by tracking the tainted data!
+
+You'll need to create a taint tracking configuration as explained in the  [CodeQL documentation](https://help.semmle.com/QL/learn-ql/java/dataflow.html#global-data-flow). Fill in the template below with your definitions of  `isSource`  and  `isSink`, and a nicer name. The predicate  `hasFlowPath`  will hold for any path through which data can flow from your sources to your sinks. As you checked that your predicates give you the correct sources and sinks, we'll get our vulnerability.
+
+```ql
+/** @kind path-problem */
+import java
+import semmle.code.java.dataflow.TaintTracking
+import DataFlow::PathGraph
+
+class MyTaintTrackingConfig extends TaintTracking::Configuration {
+    MyTaintTrackingConfig() { this = "MyTaintTrackingConfig" }
+
+    override predicate isSource(DataFlow::Node source) { 
+        // TODO 
+    }
+
+    override predicate isSink(DataFlow::Node sink) { 
+        // TODO 
+    }
+}
+
+from MyTaintTrackingConfig cfg, DataFlow::PathNode source, DataFlow::PathNode sink
+where cfg.hasFlowPath(source, sink)
+select sink, source, sink, "Custom constraint error message contains unsanitized user data"
+```
+
+Run your query using the command  `CodeQL: Run Query`  (either in the Command Palette or the right-click menu). It should give you ...  **0 results**! Ok, this is disappointing! But don't give up just now.
+
+### Step 1.3: TaintTracking configuration - Solution
+Not much to say for this one, just copy paste the previous steps into the provided template.
+
+```ql
+import java
+import semmle.code.java.dataflow.TaintTracking
+import DataFlow::PathGraph
+
+/**
+Map overrides of isValid method from ConstraintValidator
+*/
+class ConstraintValidator extends RefType {
+	ConstraintValidator() {
+		this.getQualifiedName().regexpMatch("javax.validation.ConstraintValidator(.*?)")
+	}
+}
+
+class ConstraintValidatorIsValid extends Method {
+	ConstraintValidatorIsValid() {
+		this.getName() = "isValid" and
+		this.getDeclaringType().getASupertype() instanceof  ConstraintValidator
+	}
+}
+
+/**
+Map ConstraintValidatorContext.BuildConstraintViolationWithTemplate
+*/
+class BuildConstraintViolationWithTemplate extends Method {
+	BuildConstraintViolationWithTemplate() {
+		this.hasName("buildConstraintViolationWithTemplate") and
+		this.getDeclaringType().hasName("ConstraintValidatorContext")
+	}
+}
+
+class UnsafeErrorGeneration extends TaintTracking::Configuration {
+	UnsafeErrorGeneration() { this = "UnsafeErrorGeneration" }
+	
+	override predicate isSource(DataFlow::Node source) {
+		exists(ConstraintValidatorIsValid isValidMethod|
+			source.asParameter() = isValidMethod.getParameter(0)
+		)
+	}
+	
+	override predicate isSink(DataFlow::Node sink) {
+		exists(MethodAccess callTobuildConstraintViolationWithTemplate |
+			callTobuildConstraintViolationWithTemplate.getMethod() instanceof  BuildConstraintViolationWithTemplate  and
+			sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
+		)
+	}
+}
+
+from UnsafeErrorGeneration cfg, DataFlow::PathNode source, DataFlow::PathNode sink
+where cfg.hasFlowPath(source, sink)
+select sink, source, sink, "Custom constraint error message contains unsanitized user data"
+```
