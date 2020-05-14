@@ -22,10 +22,10 @@ class ConstraintValidatorIsValid extends Method {
 Map ConstraintValidatorContext.BuildConstraintViolationWithTemplate
 */
 class BuildConstraintViolationWithTemplate extends Method {
-	BuildConstraintViolationWithTemplate() {
-		this.hasName("buildConstraintViolationWithTemplate") and
-		this.getDeclaringType().hasName("ConstraintValidatorContext")
-	}
+    BuildConstraintViolationWithTemplate() {
+        this.hasName("buildConstraintViolationWithTemplate") and
+        this.getDeclaringType().hasName("ConstraintValidatorContext")
+    }
 }
 
 class UnsafeErrorGeneration extends TaintTracking::Configuration {
@@ -38,10 +38,10 @@ class UnsafeErrorGeneration extends TaintTracking::Configuration {
     }
 
     override predicate isSink(DataFlow::Node sink) { 
-		exists(MethodAccess callTobuildConstraintViolationWithTemplate |
-			callTobuildConstraintViolationWithTemplate.getMethod() instanceof  BuildConstraintViolationWithTemplate  and
-			sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
-		)
+        exists(MethodAccess callTobuildConstraintViolationWithTemplate |
+            callTobuildConstraintViolationWithTemplate.getMethod() instanceof  BuildConstraintViolationWithTemplate  and
+            sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
+        )
     }
 }
 
