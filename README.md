@@ -329,6 +329,7 @@ We are trying to map something like this ```sink(source.getSoftConstraints())```
 So in this case we need to tell the taint tracking configuration that the node1 is the qualifier of a method access, since `getSoftConstraints` is a method of the source object and the second node will be the return of this method call. 
 This will consider a call to any method of source a sink, and even that this can be interesting for manual audits it can introduce a lot of false positives as explained in the previous section, so we need to add a filter for the methods that we are interested in, in this case `getSoftConstraints` and `keySet`.
 
+```ql
 class CustomSteps extends TaintTracking::AdditionalTaintStep {
 	override predicate step(DataFlow::Node node1, DataFlow::Node node2) {
 		exists(MethodAccess ma|
@@ -340,5 +341,29 @@ class CustomSteps extends TaintTracking::AdditionalTaintStep {
 		)
 	}
 }
+```
 
 If we run the entire query we are not going to get any results, since we need to add some more custom steps as can be seen in the following section, but this custom step can be tried out using Quick Evaluation.
+
+
+### Step 1.7: Adding taint steps through a constructor
+
+Repeat the process above with all the methods that interrupt the taint tracking, until your partial flow predicate takes you finally to the call to constructor  `HashSet`.
+
+Now you observe that CodeQL does not propagate through the  `HashSet`  constructor. Write an additional taint step for this and re-run your query.
+
+### Step 1.7: Adding taint steps through a constructor - Solution
+
+Now that our query propagates through some methods of the source we have another problem, by default the taint tracking don't propagate through an instantiation of a new object. So we need to create a step predicate where the node1 will be the first argument of a call to the constructor of hashset and the node2 will be the result of this constructor call.
+
+```ql
+class CustomSteps2 extends TaintTracking::AdditionalTaintStep {
+	override predicate step(DataFlow::Node node1, DataFlow::Node node2) {
+		exists(ConstructorCall newHashSet |
+			newHashSet.getConstructor().hasName("HashSet<String>") and
+			node1.asExpr() = newHashSet.getArgument(0) and
+			node2.asExpr() = newHashSet
+		)
+	}
+}
+```
