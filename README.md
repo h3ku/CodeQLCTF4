@@ -306,3 +306,39 @@ You must have found that CodeQL does not propagate taint through getters like  `
 ### Step 1.5: Identifying a missing taint step - Solution
 My understanding of this os that CodeQL doesn't propagate taint through getters to prevent false positives. Imagine for example that we have an object, some of the properties of the object are user-controlled, but some others are not. Now we have a sink in the first parameter of a function that receives a call to a getter of our object, for CodeQL is not possible to know if the getter of this object is obtaining the properties that we are interested in (The user-controlled ones) or just any of the other random properties, because of this CodeQL decide to not propagate through getters unless you specify it.
 
+
+### Step 1.6: Adding additional taint steps
+
+Now you know that some taint steps are missing. This is because the analysis is careful by default, and tries not to give you extra flow that may lead to false positives. Now you need to tell your taint tracking configuration that tainted data can be propagated by certain code patterns.
+
+CodeQL allows you to declare additional taint steps in a specific taint tracking configuration, as shown  [in this example](https://github.com/github/codeql/blob/master/docs/language/ql-training/java/global-data-flow-java.rst#defining-additional-taint-steps).
+
+However, we'll use an even more general approach, which allows us to add taint steps globally, so that they can be picked up by several taint tracking configurations (and potentially reused in many queries). For this you just have to extend the class  [TaintTracking::AdditionalTaintStep](https://github.com/github/codeql/blob/bc7163aa68017f93c25ec7423044727a5d785142/java/ql/src/semmle/code/java/dataflow/internal/TaintTrackingUtil.qll#L67)  and implement the  `step`  predicate. The  `step`  predicate should hold true when tainted data flows from  `node1`  to  `node2`.
+
+Run your  **original**  query again after adding a taint step. Did you get the expected results? Still no.
+
+Re-run your  **partial flow**  query again, to find where you lost track of your tainted data this time.
+
+**Hints:**  In the  `step`  predicate you should indicate that the 2 nodes are 2 elements of a  `MethodAccess`: one will be an argument and one will be the return value found at the call site.
+
+### Step 1.6: Adding additional taint steps - Solution
+This is probably one of the parts that I enjoyed the most since I didn't know about custom taint tracking steps before.
+
+The implementation is quite simple, we create a new class that extends AdditionalTaintStep that contains a step predicate, this predicate expect two nodes as arguments that we will call node1 and node2.
+We are trying to map something like this ```sink(source.getSoftConstraints())```
+So in this case we need to tell the taint tracking configuration that the node1 is the qualifier of a method access, since `getSoftConstraints` is a method of the source object and the second node will be the return of this method call. 
+This will consider a call to any method of source a sink, and even that this can be interesting for manual audits it can introduce a lot of false positives as explained in the previous section, so we need to add a filter for the methods that we are interested in, in this case `getSoftConstraints` and `keySet`.
+
+class CustomSteps extends TaintTracking::AdditionalTaintStep {
+	override predicate step(DataFlow::Node node1, DataFlow::Node node2) {
+		exists(MethodAccess ma|
+			(ma.getMethod().hasName("getSoftConstraints") or
+			ma.getMethod().hasName("keySet"))
+			and
+			node1.asExpr() = ma.getQualifier() and
+			node2.asExpr() = ma
+		)
+	}
+}
+
+If we run the entire query we are not going to get any results, since we need to add some more custom steps as can be seen in the following section, but this custom step can be tried out using Quick Evaluation.
