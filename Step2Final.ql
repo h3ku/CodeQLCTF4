@@ -6,9 +6,9 @@ import DataFlow::PathGraph
 Map overrides of isValid method from ConstraintValidator
 */
 class ConstraintValidator extends RefType {
-  ConstraintValidator() {
-      this.getQualifiedName().regexpMatch("javax.validation.ConstraintValidator(.*?)")
-  }
+    ConstraintValidator() {
+        this.getQualifiedName().regexpMatch("javax.validation.ConstraintValidator(.*?)")
+    }
 }
 
 class ConstraintValidatorIsValid extends Method {
@@ -22,10 +22,10 @@ class ConstraintValidatorIsValid extends Method {
 Map ConstraintValidatorContext.BuildConstraintViolationWithTemplate
 */
 class BuildConstraintViolationWithTemplate extends Method {
-	BuildConstraintViolationWithTemplate() {
-		this.hasName("buildConstraintViolationWithTemplate") and
-		this.getDeclaringType().hasName("ConstraintValidatorContext")
-	}
+    BuildConstraintViolationWithTemplate() {
+        this.hasName("buildConstraintViolationWithTemplate") and
+        this.getDeclaringType().hasName("ConstraintValidatorContext")
+    }
 }
 
 
@@ -60,15 +60,15 @@ class UnsafeErrorGeneration extends TaintTracking::Configuration {
 
     override predicate isSource(DataFlow::Node source) { 
         exists(ConstraintValidatorIsValid isValidMethod|
-        source.asParameter() = isValidMethod.getParameter(0)
-    )
+            source.asParameter() = isValidMethod.getParameter(0)
+        )
     }
-
+    
     override predicate isSink(DataFlow::Node sink) { 
-		exists(MethodAccess callTobuildConstraintViolationWithTemplate |
-			callTobuildConstraintViolationWithTemplate.getMethod() instanceof  BuildConstraintViolationWithTemplate  and
-			sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
-		)
+        exists(MethodAccess callTobuildConstraintViolationWithTemplate |
+            callTobuildConstraintViolationWithTemplate.getMethod() instanceof  BuildConstraintViolationWithTemplate  and
+            sink.asExpr() = callTobuildConstraintViolationWithTemplate.getArgument(0)
+        )
     }
 }
 
