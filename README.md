@@ -298,3 +298,11 @@ select sink, source, sink, "Partial flow from unsanitized usedr data"
 ```
 
 The only substantial change is the addition in the where clausure to filter by the file name that we are interested in, using ``source.getNode().getLocation().getFile().getStem() = "SchedulingConstraintSetValidator"``, this way it becomes easier to work with resulting partial flows.
+
+
+### Step 1.5: Identifying a missing taint step
+You must have found that CodeQL does not propagate taint through getters like  `container.getHardConstraints`  and  `container.getSoftConstraints`. Can you guess why this default behaviour was implemented?
+
+### Step 1.5: Identifying a missing taint step - Solution
+My understanding of this os that CodeQL doesn't propagate taint through getters to prevent false positives. Imagine for example that we have an object, some of the properties of the object are user-controlled, but some others are not. Now we have a sink in the first parameter of a function that receives a call to a getter of our object, for CodeQL is not possible to know if the getter of this object is obtaining the properties that we are interested in (The user-controlled ones) or just any of the other random properties, because of this CodeQL decide to not propagate through getters unless you specify it.
+
