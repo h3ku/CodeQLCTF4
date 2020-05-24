@@ -1,5 +1,7 @@
 # CodeQLCTF4
 
+In this README you can find the questions of the original CTF and the answers just below every section, also the repository contains the final queries for every major step.
+
 ## Step 1: Data flow and taint tracking analysis
 
 ### Step 1.1: Sources
